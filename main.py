@@ -43,6 +43,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 db = Database(DB_PATH)
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
+BOT_USER_ID = None
+
+# Кэш user_chat_id по business_connection_id
+_business_user_chats: dict[str, int] = {}
 
 
 def is_owner(user_id: int | None) -> bool:
@@ -139,6 +143,7 @@ async def cmd_logging_off(message: Message):
 
 @dp.business_connection()
 async def on_business_connection(connection: BusinessConnection):
+    _business_user_chats[connection.id] = connection.user_chat_id
     await db.save_connection(
         connection.id,
         connection.user.id,
@@ -154,14 +159,65 @@ def message_text(message: Message) -> str:
     return (message.text or message.caption or "").strip()
 
 
+def message_media(message: Message):
+    candidates = (
+        ("photo", message.photo[-1] if message.photo else None),
+        ("video", message.video),
+        ("document", message.document),
+        ("audio", message.audio),
+        ("voice", message.voice),
+        ("animation", message.animation),
+        ("video_note", message.video_note),
+        ("sticker", message.sticker),
+    )
+    for kind, item in candidates:
+        if item:
+            return item.file_id, item.file_unique_id
+    return None, None
+
+
+async def get_business_user_chat_id(connection_id: str) -> int | None:
+    cached = _business_user_chats.get(connection_id)
+    if cached:
+        return cached
+    try:
+        conn = await bot.get_business_connection(connection_id)
+        _business_user_chats[connection_id] = conn.user_chat_id
+        return conn.user_chat_id
+    except TelegramAPIError:
+        log.exception("Could not fetch business connection %s", connection_id)
+        return None
+
+
+async def forward_business_photo(message: Message):
+    """Пересылает фото из Business-сообщения владельцу подключения."""
+    if not message.photo:
+        return
+    target = await get_business_user_chat_id(message.business_connection_id)
+    if not target:
+        return
+    sender = message.from_user
+    sender_name = sender.full_name if sender else "Неизвестно"
+    try:
+        await bot.send_photo(
+            chat_id=target,
+            photo=message.photo[-1].file_id,
+            caption=f"📸 Фото от {sender_name}",
+        )
+    except TelegramAPIError:
+        log.exception("Could not forward business photo to owner")
+
+
 @dp.business_message()
 async def on_business_message(message: Message):
     if not message.business_connection_id:
         return
-    # Ignore messages authored by this bot to avoid logging its own transparency notice.
-    me = await bot.get_me()
-    if message.from_user and message.from_user.id == me.id:
+    if BOT_USER_ID and message.from_user and message.from_user.id == BOT_USER_ID:
         return
+
+    # Пересылка фото владельцу Business-аккаунта — до журналирования
+    if message.photo:
+        await forward_business_photo(message)
 
     logging_enabled = await db.get_setting("logging_enabled", "1" if LOG_MESSAGES_DEFAULT else "0")
     if logging_enabled != "1":
@@ -169,7 +225,6 @@ async def on_business_message(message: Message):
 
     chat = message.chat
     sender = message.from_user
-    # Send the disclosure before the first journal entry for this chat.
     first_notice = await db.mark_chat_announced(message.business_connection_id, chat.id, chat.full_name or chat.title or str(chat.id))
     if first_notice:
         try:
@@ -182,11 +237,12 @@ async def on_business_message(message: Message):
                      "или чувствительную информацию, если не хотите её сохранять."
             )
         except TelegramAPIError:
+            await db.reset_chat_announcement(message.business_connection_id, chat.id)
             log.exception("Could not send logging notice to business chat")
             return
-        # The first message triggers disclosure and is deliberately not stored.
         return
 
+    media_file_id, media_file_unique_id = message_media(message)
     await db.save_message(
         connection_id=message.business_connection_id,
         chat_id=chat.id,
@@ -198,8 +254,10 @@ async def on_business_message(message: Message):
         content_type=message.content_type.value,
         message_date=message.date.isoformat(),
         edited=False,
+        media_file_id=media_file_id,
+        media_file_unique_id=media_file_unique_id,
+        media_group_id=message.media_group_id,
     )
-
 
 
 @dp.edited_business_message()
@@ -249,13 +307,34 @@ async def api_chats(request):
 
 async def api_messages(request):
     await auth_owner(request)
-    limit = min(max(int(request.query.get("limit", "50")), 1), 200)
-    query = request.query.get("q", "")
+    try:
+        limit = min(max(int(request.query.get("limit", "50")), 1), 200)
+    except ValueError:
+        raise web.HTTPBadRequest(text="Invalid limit")
+    query = request.query.get("q", "")[:100]
     chat_id = request.query.get("chat_id")
+    if chat_id not in (None, ""):
+        try:
+            chat_id = int(chat_id)
+        except ValueError:
+            raise web.HTTPBadRequest(text="Invalid chat_id")
+    else:
+        chat_id = None
     deleted_arg = request.query.get("deleted")
+    if deleted_arg not in (None, "", "0", "1"):
+        raise web.HTTPBadRequest(text="Invalid deleted filter")
     deleted = None if deleted_arg in (None, "") else deleted_arg == "1"
     return web.json_response(await db.list_messages(limit, query, chat_id, deleted))
 
+
+async def api_people(request):
+    await auth_owner(request)
+    return web.json_response(await db.list_people())
+
+
+async def api_media(request):
+    await auth_owner(request)
+    return web.json_response(await db.list_media())
 
 
 async def api_connections(request):
@@ -313,6 +392,8 @@ async def start_web_server():
     app.router.add_get("/api/stats", api_stats)
     app.router.add_get("/api/chats", api_chats)
     app.router.add_get("/api/messages", api_messages)
+    app.router.add_get("/api/people", api_people)
+    app.router.add_get("/api/media", api_media)
     app.router.add_get("/api/connections", api_connections)
     app.router.add_post("/api/journal/clear", api_clear_journal)
     app.router.add_get("/api/settings", api_settings_get)
@@ -326,7 +407,10 @@ async def start_web_server():
 
 
 async def main():
+    global BOT_USER_ID
     await db.init()
+    me = await bot.get_me()
+    BOT_USER_ID = me.id
     if WEBAPP_URL:
         try:
             await bot.set_chat_menu_button(
