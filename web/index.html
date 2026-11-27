@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#17212b">
+  <title>TG Control — Full</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><div class="logo">TG</div><div><b>TG Control</b><small>Business workspace</small></div></div>
+      <nav>
+        <button class="nav active" data-page="overview"><span>▦</span> Обзор</button>
+        <button class="nav" data-page="chats"><span>▤</span> Чаты</button>
+        <button class="nav" data-page="journal"><span>◷</span> Журнал</button>
+        <button class="nav" data-page="connections"><span>⌘</span> Подключения</button>
+        <button class="nav" data-page="settings"><span>⚙</span> Настройки</button>
+      </nav>
+      <div class="side-foot"><span class="dot"></span> Защищённая сессия</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar"><div><div class="eyebrow">TELEGRAM BUSINESS</div><h1 id="pageTitle">Обзор</h1></div><button class="icon-btn" id="reload" title="Обновить">↻</button></header>
+
+      <section class="page show" id="page-overview">
+        <div class="welcome"><div><span class="eyebrow light">ПАНЕЛЬ УПРАВЛЕНИЯ</span><h2>Всё под контролем.</h2><p>Статистика, подключённые диалоги и журнал событий в одном месте.</p></div><div class="welcome-mark">TG</div></div>
+        <div class="cards">
+          <article class="metric"><span>Активные подключения</span><b id="mConnections">—</b><small>Business аккаунты</small></article>
+          <article class="metric"><span>Диалоги</span><b id="mChats">—</b><small>Получены через Business</small></article>
+          <article class="metric"><span>Сообщения</span><b id="mMessages">—</b><small>Записи в журнале</small></article>
+          <article class="metric"><span>Удаления</span><b id="mDeleted">—</b><small>События удаления</small></article>
+        </div>
+        <div class="two-col">
+          <section class="panel"><div class="panel-title"><div><h3>Активность</h3><p>Последние сообщения в журнале</p></div><span class="pill blue">LIVE DATA</span></div><div class="bars" id="activityBars"><i style="height:25%"></i><i style="height:45%"></i><i style="height:35%"></i><i style="height:65%"></i><i style="height:48%"></i><i style="height:80%"></i><i style="height:55%"></i></div><div class="bar-labels"><span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Вс</span></div></section>
+          <section class="panel"><div class="panel-title"><div><h3>Состояние журнала</h3><p>Глобальная настройка</p></div><span id="loggingBadge" class="pill">—</span></div><label class="switch-row"><span><b>Сохранять новые сообщения</b><small>Только подключённые чаты</small></span><input id="logging" type="checkbox"><i></i></label><p class="muted note">В каждом новом диалоге бот сначала отправляет уведомление. Первое сообщение не записывается.</p></section>
+        </div>
+        <section class="panel"><div class="panel-title"><div><h3>Последние события</h3><p>Недавние записи</p></div><button class="link-btn" data-goto="journal">Открыть журнал →</button></div><div id="recent" class="list-empty">Загрузка…</div></section>
+      </section>
+
+      <section class="page" id="page-chats">
+        <section class="panel"><div class="panel-title"><div><h3>Подключённые чаты</h3><p>Личные диалоги, доступные через Telegram Business</p></div><span class="pill blue" id="chatTotal">0</span></div><div id="chatsList" class="data-list">Загрузка…</div></section>
+      </section>
+
+      <section class="page" id="page-journal">
+        <section class="panel">
+          <div class="panel-title"><div><h3>Журнал сообщений</h3><p>Только сообщения, полученные после подключения и при включённом журнале</p></div><button class="link-btn" id="refreshJournal">Обновить</button></div>
+          <div class="filters"><input id="search" type="search" placeholder="Поиск по тексту, имени или чату"><select id="deletedFilter"><option value="">Все записи</option><option value="1">Удалённые</option><option value="0">Не удалённые</option></select></div>
+          <div id="journalList" class="data-list">Загрузка…</div>
+        </section>
+      </section>
+
+      <section class="page" id="page-connections">
+        <section class="panel"><div class="panel-title"><div><h3>Business-подключения</h3><p>Состояние подключений и выданные права</p></div></div><div id="connectionsList" class="data-list">Загрузка…</div><div class="callout">Добавление и выбор чатов выполняются в Telegram: Настройки → Telegram Business → Чат-боты. TG Control не может самостоятельно подключить чужой аккаунт.</div></section>
+      </section>
+
+      <section class="page" id="page-settings">
+        <section class="panel"><div class="panel-title"><div><h3>Приватность и хранение</h3><p>Управление локальными данными</p></div></div>
+          <label class="switch-row"><span><b>Журналирование</b><small>Сохранять новые сообщения в SQLite</small></span><input id="loggingSettings" type="checkbox"><i></i></label>
+          <div class="setting-row"><div><b>Очистить журнал</b><small>Удалит сохранённые тексты и записи об удалениях</small></div><button class="danger-btn" id="clearJournal">Очистить</button></div>
+          <div class="callout">Рекомендуется ограничивать доступ к панели и резервным копиям базы. Не сохраняйте чувствительную переписку без подходящего законного основания и понятного уведомления собеседников.</div>
+        </section>
+        <section class="panel"><h3>Ограничения Telegram Business</h3><ul class="limits"><li>Бот видит только чаты, выбранные при подключении.</li><li>Старые сообщения до подключения не загружаются.</li><li>Telegram может сообщать об удалении сообщения, но не гарантирует, что его содержимое ранее было получено ботом.</li><li>Business-подключение не даёт прав администратора в группах и не поддерживает бан/мут участников групп.</li><li>Секретные чаты недоступны.</li></ul></section>
+      </section>
+      <footer> TG Control · Telegram Business companion · <span id="updatedAt">—</span></footer>
+    </main>
+  </div>
+  <div id="toast" class="toast"></div>
+  <script src="/app.js"></script>
+</body>
+</html>
