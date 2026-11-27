@@ -53,6 +53,18 @@ class Database:
                 deleted_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
             """)
+            # Safe, additive migrations for databases created by older releases.
+            cur = await db.execute("PRAGMA table_info(messages)")
+            existing = {row[1] for row in await cur.fetchall()}
+            for column, declaration in (
+                ("media_file_id", "TEXT"),
+                ("media_file_unique_id", "TEXT"),
+                ("media_group_id", "TEXT"),
+            ):
+                if column not in existing:
+                    await db.execute(f"ALTER TABLE messages ADD COLUMN {column} {declaration}")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_id)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_messages_media ON messages(media_file_id)")
             await db.commit()
 
     async def close(self):
@@ -104,8 +116,17 @@ class Database:
             await db.commit()
             return first
 
+    async def reset_chat_announcement(self, connection_id, chat_id):
+        async with aiosqlite.connect(self.path) as db:
+            await db.execute(
+                "UPDATE chats SET announced=0 WHERE connection_id=? AND chat_id=?",
+                (connection_id, chat_id),
+            )
+            await db.commit()
+
     async def save_message(self, connection_id, chat_id, chat_title, message_id,
-                           sender_id, sender_name, text, content_type, message_date, edited):
+                           sender_id, sender_name, text, content_type, message_date, edited,
+                           media_file_id=None, media_file_unique_id=None, media_group_id=None):
         async with aiosqlite.connect(self.path) as db:
             await db.execute(
                 "INSERT INTO chats(connection_id,chat_id,title) VALUES(?,?,?) "
@@ -114,12 +135,18 @@ class Database:
             )
             await db.execute(
                 """INSERT INTO messages(connection_id,chat_id,chat_title,message_id,sender_id,
-                sender_name,text,content_type,message_date,edited)
-                VALUES(?,?,?,?,?,?,?,?,?,?)
+                sender_name,text,content_type,message_date,edited,
+                media_file_id,media_file_unique_id,media_group_id)
+                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(connection_id,chat_id,message_id) DO UPDATE SET
-                text=excluded.text, edited=excluded.edited""",
+                text=excluded.text, edited=excluded.edited,
+                content_type=excluded.content_type,
+                media_file_id=excluded.media_file_id,
+                media_file_unique_id=excluded.media_file_unique_id,
+                media_group_id=excluded.media_group_id""",
                 (connection_id, chat_id, chat_title, message_id, sender_id,
-                 sender_name, text, content_type, message_date, int(edited)),
+                 sender_name, text, content_type, message_date, int(edited),
+                 media_file_id, media_file_unique_id, media_group_id),
             )
             await db.commit()
 
@@ -162,7 +189,7 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute("""
-                SELECT c.chat_id,c.title,COUNT(m.id) AS message_count,
+                SELECT c.connection_id,c.chat_id,c.title,COUNT(m.id) AS message_count,
                        MAX(m.message_date) AS last_message
                 FROM chats c LEFT JOIN messages m
                 ON c.connection_id=m.connection_id AND c.chat_id=m.chat_id
@@ -186,8 +213,8 @@ class Database:
         async with aiosqlite.connect(self.path) as db:
             db.row_factory = aiosqlite.Row
             cur = await db.execute(f"""
-                SELECT chat_title,chat_id,message_id,sender_name,text,content_type,
-                       message_date,edited,deleted
+                SELECT chat_title,chat_id,message_id,sender_id,sender_name,text,content_type,
+                       message_date,edited,deleted,media_file_id,media_file_unique_id,media_group_id
                 FROM messages {where} ORDER BY id DESC LIMIT ?
             """, (*params, min(max(int(limit), 1), 200)))
             return [dict(r) for r in await cur.fetchall()]
@@ -205,4 +232,29 @@ class Database:
                 SELECT connection_id,user_id,enabled,rights_json,updated_at
                 FROM connections ORDER BY updated_at DESC
             """)
+            return [dict(r) for r in await cur.fetchall()]
+
+
+    async def list_people(self, limit=200):
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("""
+                SELECT sender_id, sender_name, COUNT(*) AS message_count,
+                       MAX(message_date) AS last_seen,
+                       COUNT(DISTINCT chat_id) AS chat_count
+                FROM messages WHERE sender_id IS NOT NULL
+                GROUP BY sender_id, sender_name
+                ORDER BY last_seen DESC LIMIT ?
+            """, (min(max(int(limit), 1), 500),))
+            return [dict(r) for r in await cur.fetchall()]
+
+    async def list_media(self, limit=200):
+        async with aiosqlite.connect(self.path) as db:
+            db.row_factory = aiosqlite.Row
+            cur = await db.execute("""
+                SELECT chat_title,chat_id,message_id,sender_id,sender_name,
+                       content_type,text,message_date,media_file_id,media_file_unique_id
+                FROM messages WHERE media_file_id IS NOT NULL
+                ORDER BY id DESC LIMIT ?
+            """, (min(max(int(limit), 1), 500),))
             return [dict(r) for r in await cur.fetchall()]
